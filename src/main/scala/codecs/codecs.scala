@@ -199,7 +199,7 @@ trait DecoderInstances:
       case Json.Arr(xs) => xs.map(decoder.decode).foldLeft(Option(List.newBuilder[A])) { 
         case (Some(a), Some(b)) => Some(a += b)
         case _ => None 
-      }.map(_.result())
+      }.map(i => i.result())
       case _ => None
     }
 
