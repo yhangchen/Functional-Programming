@@ -68,6 +68,12 @@ object RecursiveLanguage {
             Logger.log(s"+--> ${show(res)}")
             res
           case _ => error(s"Cannot apply non-function ${show(eFun)} in a call")
+      case Empty => Empty
+      case Cons(head, tail) => Cons(eval(head, defs), eval(tail, defs))
+      case Match(scrutinee, caseEmpty, headName, tailName, caseCons) => eval(scrutinee, defs) match 
+        case Empty => eval(caseEmpty, defs)
+        case Cons(head, tail) =>  eval(caseCons, defs ++ Map(headName -> head, tailName -> tail))
+        case _ =>  error("not a list")
 
 
   /** Substitutes Name(n) by r in e. */
@@ -97,13 +103,13 @@ object RecursiveLanguage {
           else
             // Otherwise, substitute in the function body anyway.
             Fun(param, subst(body, n, r))
-      case Empty => ???
-      case Cons(head, tail) => ???
+      case Empty => e
+      case Cons(head, tail) => Cons(subst(head, n, r), subst(tail, n, r))
       case Match(scrutinee, caseEmpty, headName, tailName, caseCons) =>
         if headName == n || tailName == n then
           // If n conflicts with headName or tailName, there cannot be a reference
           // to n in caseCons. Simply substite n by r in scrutinee and caseEmpty.
-          ???
+          Match(subst(scrutinee, n, r), subst(caseEmpty, n, r), headName, tailName, caseCons)
         else
           // If the free variables in r contain headName or tailName, the naive
           // substitution would change their meaning to reference to pattern binds.
@@ -111,7 +117,13 @@ object RecursiveLanguage {
           // Perform alpha conversion in caseCons to eliminate the name collision.
 
           // Otherwise, substitute in scrutinee, caseEmpty & caseCons anyway.
-          ???
+          val fvs = freeVars(r)
+          if fvs.contains(headName) || fvs.contains(tailName) then
+            val headName1 = differentName(headName, fvs)
+            val tailName1 = differentName(tailName, fvs)
+            val caseCons1 = alphaConvert(alphaConvert(caseCons, headName, headName1), tailName, tailName1)
+            Match(subst(scrutinee, n, r), subst(caseEmpty, n, r), headName1, tailName1, subst(caseCons1, n, r))
+          else Match(subst(scrutinee, n, r), subst(caseEmpty, n, r), headName, tailName, subst(caseCons, n, r))
 
   def differentName(n: String, s: Set[String]): String =
     if s.contains(n) then differentName(n + "'", s)
@@ -126,7 +138,9 @@ object RecursiveLanguage {
       case IfNonzero(cond, trueE, falseE) => freeVars(cond) ++ freeVars(trueE) ++ freeVars(falseE)
       case Call(f, arg) => freeVars(f) ++ freeVars(arg)
       case Fun(param, body) => freeVars(body) - param
-      // TODO: Add cases for Empty, Cons & Match
+      case Empty => Set()
+      case Cons(head, tail) => freeVars(head) ++ freeVars(tail)
+      case Match(scrutinee, caseEmpty, _, _, caseCons) => if scrutinee == Empty then freeVars(caseEmpty) else freeVars(caseCons)
 
   /** Substitutes Name(n) by Name(m) in e. */
   def alphaConvert(e: Expr, n: String, m: String): Expr =
@@ -144,7 +158,13 @@ object RecursiveLanguage {
         // as these would reference param instead.
         if param == n then e
         else Fun(param, alphaConvert(body, n, m))
-      // TODO: Add cases for Empty, Cons & Match
+      case Empty => e
+      case Cons(head, tail) => Cons(alphaConvert(head, n, m), alphaConvert(tail, n, m))
+      case Match(scrutinee, caseEmpty, headName, tailName, caseCons) => 
+        if headName == n || tailName == n then
+          Match(alphaConvert(scrutinee, n, m), alphaConvert(caseEmpty, n, m), headName, tailName, caseCons)
+        else Match(alphaConvert(scrutinee, n, m), alphaConvert(caseEmpty, n, m), headName, tailName, alphaConvert(caseCons, n, m))
+
 
   case class EvalException(msg: String) extends Exception(msg)
 
@@ -170,6 +190,10 @@ object RecursiveLanguage {
         s"(if ${show(cond)} then ${show(caseTrue)} else ${show(caseFalse)})"
       case Call(f, arg) => show(f) + "(" + show(arg) + ")"
       case Fun(n, body) => s"($n => ${show(body)})"
+      case Empty => s" Nil "
+      case Cons(head, tail) => s"${show(head)} :: ${show(tail)}"
+      case Match(scrutinee, caseEmpty, headName, tailName, caseCons) => s"${show(scrutinee)} match case Empty => ${show(caseEmpty)} case ${show(Name(headName))} :: ${show(Name(tailName))} => ${show(caseCons)}"
+
 
   /** Pretty print top-level definition as a String. */
   def showEnv(env: Map[String, Expr]): String =
@@ -206,17 +230,28 @@ object RecursiveLanguage {
     "twice" -> Fun("f", Fun("x",
       Call(N("f"), Call(N("f"), N("x"))))),
 
-    // TODO Implement map (see recitation session)
-    "map" -> Empty,
+    // Implement map (see recitation session)
+    "map" -> Fun("ls", Fun("f", Match(N("ls"), Empty, "x", "xs", Cons(Call(N("f"), N("x")), Call(Call(N("map"), N("xs")), N("f")))))),
+    // def map[A,B](ls: List[A])(f: A => B): List[B] = ls match {
+    //   case Nil       => Nil
+    //   case Cons(x,xs) => Cons(f(x),map(xs)(f))
+    // }
 
-    // TODO Implement gcd (see recitation session)
-    "gcd" -> Empty,
-
-    // TODO Implement foldLeft (see recitation session)
-    "foldLeft" -> Empty,
-
-    // TODO Implement foldRight (analogous to foldLeft, but operate right-to-left)
-    "foldRight" -> Empty,
+    // Implement gcd (see recitation session)
+    "gcd" -> Fun("a", Fun("b", IfNonzero(N("b"), Call(Call(N("gcd"), N("b")), modulo(N("a"), N("b"))), N("a")))),
+    // Implement foldLeft (see recitation session)
+    "foldLeft" -> Fun("ls", Fun("z", Fun("fold", Match(N("ls"), N("z"), "x", "xs", Call(Call(Call(N("foldLeft"), N("xs")), Call(Call(N("fold"), N("z")), N("x"))), N("fold")))))),
+    // def foldLeft[A,B](ls: List[A], z: B)(f: (B, A) => B): B = ls match {
+    //   case Nil        => z
+    //   case Cons(x,xs) => foldLeft(xs, f(z,x))(f)
+    // }
+    // Implement foldRight (analogous to foldLeft, but operate right-to-left)
+    "foldRight" -> Fun("ls", Fun("z", Fun("fold", Match(N("ls"), N("z"), "x", "xs", Call(Call(N("fold"), N("x")), Call(Call(Call(N("foldRight"), N("xs")), N("z")), N("fold"))))))),
+    // def foldRight[A,B](ls: List[A], z: B)(f: (A, B) => B): B = 
+    // ls match {
+    //   case Nil        => z
+    //   case Cons(x,xs) => f(x, foldRight(xs, z)(f))
+    // }
   )
 
   def main(args: Array[String]): Unit =
